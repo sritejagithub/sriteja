@@ -7,18 +7,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
- * Thread-safe, in-memory implementation of the Price Service.
- * Ensures atomicity via staging areas and the "asOf" rule via Map merges.
+ * Thread-safe in-memory price service.
+ * Uses batches to ensure atomic updates and keeps the latest price by asOf time.
  */
 public class LatestValuePriceService {
 
-    // Main store: Instrument ID -> Latest PriceRecord
     private final Map<String, PriceRecord> latestPrices = new ConcurrentHashMap<>();
 
-    // Staging: Batch ID -> (Instrument ID -> PriceRecord)
     private final Map<UUID, Map<String, PriceRecord>> activeBatches = new ConcurrentHashMap<>();
 
-    // Lifecycle: Tracks if a batch has been finalized to prevent double-completion
     private final Map<UUID, AtomicBoolean> batchStatus = new ConcurrentHashMap<>();
 
     public record PriceRecord(String id, Instant asOf, Object payload) {}
@@ -48,10 +45,13 @@ public class LatestValuePriceService {
         }
 
         for (PriceRecord record : records) {
-            // Internal batch consistency: keep latest within the batch itself
-            staging.merge(record.id(), record, (oldR, newR) ->
-                    newR.asOf().isAfter(oldR.asOf()) ? newR : oldR);
+            // Keep latest within the batch itself
+            PriceRecord existing = staging.get(record.id());
+            if (existing == null || record.asOf().isAfter(existing.asOf())) {
+                staging.put(record.id(), record);
+            }
         }
+
     }
 
     /**
@@ -64,17 +64,25 @@ public class LatestValuePriceService {
         Map<String, PriceRecord> staging = activeBatches.get(batchId);
         AtomicBoolean status = batchStatus.get(batchId);
 
-        if (staging == null || status == null || !status.compareAndSet(false, true)) {
+        if (staging == null || status == null || status.get()) {
             throw new IllegalStateException("Batch already completed or does not exist: " + batchId);
         }
 
-        // Atomic "Promotion" to the main store using the asOf rule
-        staging.forEach((id, record) ->
-                latestPrices.merge(id, record, (oldVal, newVal) ->
-                        newVal.asOf().isAfter(oldVal.asOf()) ? newVal : oldVal)
-        );
+        // Mark batch as completed
+        status.set(true);
+
+        // Promote staged data to main batch
+        for (Map.Entry<String, PriceRecord> entry : staging.entrySet()) {
+            String id = entry.getKey();
+            PriceRecord newRecord = entry.getValue();
+            PriceRecord existing = latestPrices.get(id);
+            if (existing == null || newRecord.asOf().isAfter(existing.asOf())) {
+                latestPrices.put(id, newRecord);
+            }
+        }
 
         cleanup(batchId);
+
     }
 
     public void cancelBatch(UUID batchId) {

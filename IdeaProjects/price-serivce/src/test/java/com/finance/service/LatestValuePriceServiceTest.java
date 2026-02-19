@@ -12,25 +12,32 @@ class LatestValuePriceServiceTest {
         LatestValuePriceService service = new LatestValuePriceService();
         Instant now = Instant.now();
 
-        UUID batchId = service.startBatch();
+        UUID batch1 = service.startBatch();
 
-        // Test that prices are invisible until the batch is completed
-        service.uploadChunk(batchId, List.of(
+        service.uploadChunk(batch1, List.of(
                 new LatestValuePriceService.PriceRecord("BTC", now, "60k")
         ));
-        assertTrue(service.getLatestPrices(List.of("BTC")).isEmpty(), "Uncompleted batch should be invisible");
 
-        // Test that completed batch data is published to the latest price store
-        service.completeBatch(batchId);
+        // Data should NOT be visible before completion
+        assertTrue(service.getLatestPrices(List.of("BTC")).isEmpty());
+
+        service.completeBatch(batch1);
+
+        // Now data should be visible
         assertEquals("60k", service.getLatestPrices(List.of("BTC")).get("BTC").payload());
 
-        //Test asOf Logic: Upload an older price in a new batch
+        // Older price
         UUID batch2 = service.startBatch();
+
         service.uploadChunk(batch2, List.of(
                 new LatestValuePriceService.PriceRecord("BTC", now.minusSeconds(100), "50k")
         ));
+
         service.completeBatch(batch2);
 
-        assertEquals("60k", service.getLatestPrices(List.of("BTC")).get("BTC").payload());
+        // Latest value should remain unchanged (asOf rule)
+        assertEquals("60k",
+                service.getLatestPrices(List.of("BTC")).get("BTC").payload());
+
     }
 }
