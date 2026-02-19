@@ -8,7 +8,8 @@ import java.util.stream.Collectors;
 
 /**
  * Thread-safe in-memory price service.
- * Uses batches to ensure atomic updates and keeps the latest price by asOf time.
+ * Batch updates are published in a single step,
+ * and the most recent price (by asOf) is retained.
  */
 public class LatestValuePriceService {
 
@@ -24,7 +25,6 @@ public class LatestValuePriceService {
      * Creates and initializes a new batch.
      * Returns the generated batch ID.
      */
-
     public UUID startBatch() {
         UUID batchId = UUID.randomUUID();
         activeBatches.put(batchId, new ConcurrentHashMap<>());
@@ -33,11 +33,10 @@ public class LatestValuePriceService {
     }
 
     /**
-     * Uploads price records to a batch.
-     * keeps only the latest (by asOf) record per id.
-     * fails if the batch is inactive.
+     * Adds price records to an active batch.
+     * Retains only the most recent record per instrument.
+     * Throws an exception if the batch is not active.
      */
-
     public void uploadChunk(UUID batchId, List<PriceRecord> records) {
         Map<String, PriceRecord> staging = activeBatches.get(batchId);
         if (staging == null || batchStatus.get(batchId).get()) {
@@ -55,11 +54,9 @@ public class LatestValuePriceService {
     }
 
     /**
-     * Finalizes a batch and publishes its records atomically.
-     * Only the latest (by asOf) price per instrument is kept.
-     * Consumers will not see partial batch updates.
+     * Marks a batch as complete and publishes its prices.
+     * Retains the latest value by asOf time.
      */
-
     public void completeBatch(UUID batchId) {
         Map<String, PriceRecord> staging = activeBatches.get(batchId);
         AtomicBoolean status = batchStatus.get(batchId);
@@ -68,10 +65,10 @@ public class LatestValuePriceService {
             throw new IllegalStateException("Batch already completed or does not exist: " + batchId);
         }
 
-        // Mark batch as completed
+        //Mark batch as completed
         status.set(true);
 
-        // Promote staged data to main batch
+        //Move staged data to the main price map
         for (Map.Entry<String, PriceRecord> entry : staging.entrySet()) {
             String id = entry.getKey();
             PriceRecord newRecord = entry.getValue();
